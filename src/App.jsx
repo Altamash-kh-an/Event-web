@@ -31,6 +31,7 @@ function UploadPage() {
   const [message, setMessage] = useState('')
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [successOpen, setSuccessOpen] = useState(false)
   const [session, setSession] = useState(null)
   const [adminOpen, setAdminOpen] = useState(false)
   const [email, setEmail] = useState('')
@@ -73,7 +74,17 @@ function UploadPage() {
     photos.forEach((photo) => URL.revokeObjectURL(photo.url))
     setPhotos([])
     setUploading(false)
-    setMessage(failures.length ? `Could not upload: ${failures.join(', ')}` : 'Thank you. Your photos are now part of our album.')
+    if (failures.length) setMessage(`Could not upload: ${failures.join(', ')}`)
+    else {
+      setMessage('')
+      setSuccessOpen(true)
+    }
+  }
+
+  function startAnotherUpload() {
+    setSuccessOpen(false)
+    setMessage('')
+    inputRef.current?.click()
   }
 
   function removePhoto(index) {
@@ -133,11 +144,12 @@ function UploadPage() {
   return <main className="page"><div className="pattern pattern-one" aria-hidden="true" /><div className="pattern pattern-two" aria-hidden="true" /><section className="site-shell">
     <header className="topbar"><div className="monogram" aria-hidden="true">س</div><div className="topbar-label">{siteConfig.englishGreeting}</div><button className="admin-toggle" type="button" onClick={() => setAdminOpen((open) => !open)}>{session ? 'ALBUM ADMIN' : 'ADMIN LOGIN'}</button></header>
     <div className="hero-copy"><p className="arabic-greeting" lang="ar" dir="rtl">{siteConfig.arabicGreeting}</p><p className="arabic-welcome" lang="ar" dir="rtl">{siteConfig.arabicWelcome}</p><div className="gold-rule"><span>✦</span></div><p className="eyebrow">A WEDDING ALBUM</p><h1>{siteConfig.groomName} <em>weds</em> {siteConfig.brideName}</h1><p className="welcome-line">{siteConfig.welcomeLine}</p><p className="upload-copy">{siteConfig.uploadDescription}</p></div>
-    <div className="upload-box" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); choosePhotos(event.dataTransfer.files) }}><div className="upload-icon" aria-hidden="true">✧</div><p className="drop-title">{photos.length ? `${photos.length} ${photos.length === 1 ? 'photo' : 'photos'} selected` : 'Share your cherished moments'}</p><p className="drop-hint">Choose from your device or drag and drop here</p><button className="upload-button" onClick={upload} type="button" disabled={uploading}>{uploading ? `UPLOADING ${uploadProgress}%` : 'UPLOAD YOUR PHOTOS'}<span aria-hidden="true">↗</span></button><input ref={inputRef} className="hidden-input" type="file" accept="image/*" multiple onChange={(event) => { choosePhotos(event.target.files); event.target.value = '' }} /><p className="file-note">JPG, PNG, WEBP, HEIC · Up to 20 MB each</p>{uploading && <div className="progress-track" aria-label={`Upload progress ${uploadProgress}%`}><span style={{ width: `${uploadProgress}%` }} /></div>}</div>
+    <div className={`upload-box ${photos.length ? 'has-selection' : ''}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); choosePhotos(event.dataTransfer.files) }}><div className="upload-icon" aria-hidden="true">✧</div><p className="drop-title">{photos.length ? `${photos.length} ${photos.length === 1 ? 'photo' : 'photos'} selected` : 'Share your cherished moments'}</p>{photos.length ? <div className="selected-summary"><img src={photos[0].url} alt={`Selected ${photos[0].file.name}`} /><div><p>{photos[0].file.name}</p>{photos.length > 1 && <span>+ {photos.length - 1} more selected</span>}</div></div> : <p className="drop-hint">Choose from your device or drag and drop here</p>}<button className="upload-button" onClick={photos.length ? upload : () => inputRef.current?.click()} type="button" disabled={uploading}>{uploading ? `UPLOADING ${uploadProgress}%` : photos.length ? 'UPLOAD SELECTED PHOTOS' : 'CHOOSE PHOTOS'}<span aria-hidden="true">↗</span></button><input ref={inputRef} className="hidden-input" type="file" accept="image/*" multiple onChange={(event) => { choosePhotos(event.target.files); event.target.value = '' }} />{!photos.length && <p className="file-note">JPG, PNG, WEBP, HEIC · Up to 20 MB each</p>}{uploading && <div className="progress-track" aria-label={`Upload progress ${uploadProgress}%`}><span style={{ width: `${uploadProgress}%` }} /></div>}</div>
     {photos.length > 0 && <div className="preview-grid" aria-label="Selected photo previews">{photos.map((photo, index) => <figure className="preview" key={`${photo.file.name}-${index}`}><img src={photo.url} alt={`Selected ${photo.file.name}`} /><button onClick={() => removePhoto(index)} type="button" aria-label={`Remove ${photo.file.name}`}>×</button></figure>)}</div>}
     {message && <p className="status" role="status">{message}</p>}
     {adminOpen && <aside className="admin-panel">{!session ? <form onSubmit={signIn}><h2>Private album</h2><p>Sign in to view, download or clear the album.</p><input type="email" placeholder="Admin email" value={email} onChange={(event) => setEmail(event.target.value)} required /><input type="password" placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} required /><button className="admin-button" type="submit">SIGN IN</button></form> : <><div className="admin-heading"><div><h2>Private album</h2><p>{loadingGallery ? 'Loading photos…' : `${adminPhotos.length} photos`}</p></div><button className="text-button" type="button" onClick={() => supabase.auth.signOut()}>SIGN OUT</button></div><div className="admin-actions"><button className="admin-button" type="button" onClick={loadAdminPhotos}>REFRESH</button><button className="admin-button" type="button" onClick={downloadZip} disabled={!adminPhotos.length}>DOWNLOAD ZIP</button>{isAdminSession && <button className="admin-button danger-button" type="button" onClick={emptyAlbum} disabled={!adminPhotos.length}>EMPTY ALBUM</button>}</div>{adminPhotos.length > 0 && <div className="preview-grid admin-grid">{adminPhotos.map((photo) => <img className="admin-photo" key={photo.path} src={photo.signedUrl} alt={photo.path} />)}</div>}</>}</aside>}
     <footer className="footer"><span>WITH LOVE</span><span>•</span><span>{siteConfig.groomName} &amp; {siteConfig.brideName}</span><span>•</span><span>FOREVER</span></footer>
+    {successOpen && <div className="success-backdrop" role="presentation"><div className="success-modal" role="dialog" aria-modal="true" aria-labelledby="success-title" aria-describedby="success-message"><div className="success-mark" aria-hidden="true">✦</div><h2 id="success-title">Thank you for being part of our album!</h2><p id="success-message">Your beautiful moment is now part of our wedding memories. We’re so glad you shared it with us.</p><button className="upload-button" type="button" onClick={startAnotherUpload}>Upload another photo</button></div></div>}
   </section></main>
 }
 
