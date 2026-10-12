@@ -4,6 +4,7 @@ import { PHOTO_BUCKET, supabase } from './lib/supabase'
 import { siteConfig } from './siteConfig'
 import './App.css'
 import './admin.css'
+import GuestMediaActions from './GuestMediaActions'
 
 const GUEST_UPLOAD_FOLDER = siteConfig.uploadFolder
 const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL
@@ -13,6 +14,15 @@ function isImageFile(item) {
   return (typeof mimeType === 'string' && mimeType.startsWith('image/')) || /\.(jpe?g|png|webp|heic|heif)$/i.test(item.name)
 }
 
+function isVideoFile(item) {
+  const mimeType = item.metadata?.mimetype
+  return (typeof mimeType === 'string' && mimeType.startsWith('video/')) || /\.(mp4|webm|ogg|mov|m4v|avi)$/i.test(item.name)
+}
+
+function isMediaFile(item) {
+  return isImageFile(item) || isVideoFile(item)
+}
+
 async function listAllPhotos(prefix = '') {
   const { data, error } = await supabase.storage.from(PHOTO_BUCKET).list(prefix, { limit: 1000, sortBy: { column: 'created_at', order: 'desc' } })
   if (error) throw error
@@ -20,13 +30,18 @@ async function listAllPhotos(prefix = '') {
   for (const item of data || []) {
     const path = prefix ? `${prefix}/${item.name}` : item.name
     if (item.id === null) files.push(...await listAllPhotos(path))
-    else if (item.name !== '.emptyFolderPlaceholder' && isImageFile(item)) files.push({ ...item, path })
+    else if (item.name !== '.emptyFolderPlaceholder' && isMediaFile(item)) files.push({ ...item, path, mediaType: isVideoFile(item) ? 'video' : 'image' })
   }
   return files
 }
 
 function UploadPage() {
   const inputRef = useRef(null)
+  const cameraVideoRef = useRef(null)
+  const canvasRef = useRef(null)
+  const recorderRef = useRef(null)
+  const streamRef = useRef(null)
+  const timerRef = useRef(null)
   const [photos, setPhotos] = useState([])
   const [message, setMessage] = useState('')
   const [uploading, setUploading] = useState(false)
@@ -38,6 +53,13 @@ function UploadPage() {
   const [password, setPassword] = useState('')
   const [adminPhotos, setAdminPhotos] = useState([])
   const [loadingGallery, setLoadingGallery] = useState(false)
+  const [cameraMode, setCameraMode] = useState(null)
+  const [cameraError, setCameraError] = useState('')
+  const [capturedMedia, setCapturedMedia] = useState(null)
+  const [wish, setWish] = useState('')
+  const [recording, setRecording] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const [recordingMime, setRecordingMime] = useState('video/webm')
   const isAdminSession = Boolean(ADMIN_EMAIL) && session?.user?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase()
 
   useEffect(() => {
@@ -56,6 +78,116 @@ function UploadPage() {
     if (!selected.length) return setMessage('Please choose an image file to continue.')
     setPhotos((current) => [...current, ...selected.map((file) => ({ file, url: URL.createObjectURL(file) }))])
     setMessage('')
+  }
+
+  function stopCamera() {
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = null
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    setRecording(false)
+    setCameraMode(null)
+  }
+
+  useEffect(() => {
+    if (cameraVideoRef.current && streamRef.current) cameraVideoRef.current.srcObject = streamRef.current
+  }, [cameraMode])
+
+  useEffect(() => () => stopCamera(), [])
+
+  async function openCamera(mode) {
+    setCameraError('')
+    setCapturedMedia(null)
+    if (!navigator.mediaDevices?.getUserMedia) return setCameraError('Camera recording is not supported in this browser. Please choose a file from your gallery.')
+    try {
+      streamRef.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: mode === 'video' })
+      setCameraMode(mode)
+    } catch (error) {
+      setCameraError(error.name === 'NotAllowedError' ? 'Camera permission was denied. You can still choose a file from your gallery.' : 'We could not access your camera. Please check your browser permissions and try again.')
+    }
+  }
+
+  function capturePhoto() {
+    const video = cameraVideoRef.current
+    const canvas = canvasRef.current
+    if (!video || !canvas) return
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d').drawImage(video, 0, 0)
+    canvas.toBlob((blob) => {
+      if (!blob) return setCameraError('We could not capture that photo. Please try again.')
+      const file = new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' })
+      setCapturedMedia({ file, url: URL.createObjectURL(file) })
+      stopCamera()
+    }, 'image/jpeg', 0.92)
+  }
+
+  function stopRecording() {
+    if (recorderRef.current?.state === 'recording') recorderRef.current.stop()
+  }
+
+  function startRecording() {
+    if (!window.MediaRecorder) return setCameraError('Video recording is not supported in this browser. Please choose a video from your gallery.')
+    const options = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/mp4']
+    const mimeType = options.find((candidate) => MediaRecorder.isTypeSupported(candidate))
+    if (!mimeType) return setCameraError('This browser cannot create a supported video recording. Please choose a video from your gallery.')
+    const chunks = []
+    let totalBytes = 0
+    const recorder = new MediaRecorder(streamRef.current, { mimeType })
+    recorderRef.current = recorder
+    setRecordingMime(mimeType.split(';')[0])
+    setRecordingSeconds(0)
+    setRecording(true)
+    recorder.ondataavailable = (event) => {
+      if (!event.data.size) return
+      totalBytes += event.data.size
+      chunks.push(event.data)
+      if (totalBytes > 25 * 1024 * 1024) {
+        setCameraError('This recording reached the 25 MB limit and was cancelled.')
+        stopRecording()
+      }
+    }
+    recorder.onstop = () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      timerRef.current = null
+      setRecording(false)
+      if (totalBytes > 25 * 1024 * 1024 || !chunks.length) {
+        if (!chunks.length) setCameraError('Recording cancelled. No video was captured.')
+        return stopCamera()
+      }
+      const blob = new Blob(chunks, { type: mimeType.split(';')[0] })
+      const extension = mimeType.includes('mp4') ? 'mp4' : 'webm'
+      const file = new File([blob], `camera-${Date.now()}.${extension}`, { type: blob.type })
+      setCapturedMedia({ file, url: URL.createObjectURL(file) })
+      stopCamera()
+    }
+    recorder.start(1000)
+    timerRef.current = setInterval(() => {
+      setRecordingSeconds((seconds) => {
+        if (seconds + 1 >= 30) {
+          setCameraError('The maximum 30-second recording length was reached.')
+          stopRecording()
+        }
+        return Math.min(seconds + 1, 30)
+      })
+    }, 1000)
+  }
+
+  async function uploadCapturedMedia() {
+    if (!capturedMedia) return
+    if (capturedMedia.file.size > 25 * 1024 * 1024) return setCameraError('This video is larger than the 25 MB limit.')
+    setUploading(true)
+    setMessage('Uploading your memory…')
+    const safeName = capturedMedia.file.name.replace(/[^a-zA-Z0-9._-]/g, '-')
+    const path = `${GUEST_UPLOAD_FOLDER}/${crypto.randomUUID()}-${safeName}`
+    const { error } = await supabase.storage.from(PHOTO_BUCKET).upload(path, capturedMedia.file, { contentType: capturedMedia.file.type, cacheControl: '3600', upsert: false, metadata: wish.trim() ? { wedding_wish: wish.trim().slice(0, 160) } : undefined })
+    setUploading(false)
+    if (error) return setCameraError(`Upload failed: ${error.message}`)
+    URL.revokeObjectURL(capturedMedia.url)
+    setCapturedMedia(null)
+    setWish('')
+    setMessage('')
+    setSuccessOpen(true)
   }
 
   async function upload() {
@@ -170,6 +302,15 @@ function AdminPage() {
   }, [])
 
   useEffect(() => { if (session) loadPhotos() }, [session])
+  useEffect(() => {
+    requestAnimationFrame(() => document.querySelectorAll('.admin-gallery img.admin-photo').forEach((image) => {
+      const media = photos.find((item) => item.path === image.alt)
+      if (media?.mediaType !== 'video') return
+      const video = document.createElement('video')
+      video.className = image.className; video.src = media.signedUrl; video.controls = true; video.playsInline = true; video.setAttribute('aria-label', media.path)
+      image.replaceWith(video)
+    }))
+  }, [photos])
 
   async function signIn(event) {
     event.preventDefault()
@@ -217,6 +358,6 @@ function AdminPage() {
   return <main className="admin-page"><section className="admin-card admin-card-wide"><div className="admin-heading"><div><a className="back-link" href="/">← Upload page</a><p className="eyebrow">PRIVATE WEDDING ALBUM</p><h1>Your <em>photos</em></h1><p className="album-count">{loading ? 'Loading photos…' : `${photos.length} photos in the album`}</p></div><button className="text-button" type="button" onClick={() => supabase.auth.signOut()}>SIGN OUT</button></div><div className="admin-actions"><button className="admin-button" type="button" onClick={loadPhotos}>REFRESH</button><button className="admin-button" type="button" onClick={downloadAll} disabled={!photos.length || downloading}>{downloading ? 'CREATING ZIP…' : 'DOWNLOAD ALL AS ZIP'}</button>{isAdmin && <button className="admin-button danger-button" type="button" onClick={deleteAllPhotos} disabled={!photos.length || downloading}>EMPTY ALBUM</button>}</div>{status && <p className="status" role="status">{status}</p>}{photos.length > 0 ? <div className="admin-gallery">{photos.map((photo) => <img className="admin-photo" key={photo.path} src={photo.signedUrl} alt={photo.path} />)}</div> : !loading && <p className="empty-album">No photos found in the private bucket.</p>}</section></main>
 }
 
-function App() { return window.location.pathname === '/admin' ? <AdminPage /> : <UploadPage /> }
+function App() { return window.location.pathname === '/admin' ? <AdminPage /> : <><UploadPage /><GuestMediaActions /></> }
 
 export default App
