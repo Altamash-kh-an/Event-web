@@ -7,6 +7,11 @@ export const siteConfig = {
   welcomeLine: 'Nikkah mein khush aamdeed',
   uploadDescription: 'Upload your best moments to become part of our wedding album.',
   uploadFolder: 'Habibpur-shadi',
+  uploadLimits: {
+    maxBytes: 25 * 1024 * 1024,
+    maxMegabytes: 25,
+    maxVideoSeconds: 30,
+  },
   // Customize these values for each event. GuestMediaActionsFixed.jsx reads all wish copy from here.
   weddingWish: {
     label: 'Add a short wedding wish',
