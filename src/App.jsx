@@ -4,10 +4,17 @@ import { PHOTO_BUCKET, supabase } from './lib/supabase'
 import { siteConfig } from './siteConfig'
 import './App.css'
 import './admin.css'
-import GuestMediaActions from './GuestMediaActionsMimeSafe'
+import GuestMediaActions from './GuestMediaActionsFixed'
 
 const GUEST_UPLOAD_FOLDER = siteConfig.uploadFolder
 const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL
+const MAX_UPLOAD_BYTES = siteConfig.uploadLimits.maxBytes
+
+function formatSupabaseError(error, file) {
+  const detail = [error?.message, error?.details, error?.hint, error?.statusCode ? `status ${error.statusCode}` : ''].filter(Boolean).join(' — ')
+  console.error('Supabase wedding photo upload failed', { error, fileName: file?.name, fileType: file?.type, fileSize: file?.size, bucket: PHOTO_BUCKET, folder: GUEST_UPLOAD_FOLDER })
+  return `Upload failed for ${file?.name || 'this photo'}: ${detail || 'Supabase returned an unknown error.'}`
+}
 
 function isImageFile(item) {
   const mimeType = item.metadata?.mimetype
@@ -57,6 +64,7 @@ function UploadPage() {
   const [cameraError, setCameraError] = useState('')
   const [capturedMedia, setCapturedMedia] = useState(null)
   const [wish, setWish] = useState('')
+  const [galleryWish, setGalleryWish] = useState('')
   const [recording, setRecording] = useState(false)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [recordingMime, setRecordingMime] = useState('video/webm')
@@ -73,8 +81,17 @@ function UploadPage() {
     else setAdminPhotos([])
   }, [session])
 
+  useEffect(() => {
+    const note = document.querySelector('.upload-box .file-note')
+    if (note) note.textContent = `JPG, PNG, WEBP, HEIC · Up to ${siteConfig.uploadLimits.maxMegabytes} MB each`
+  }, [photos.length])
+
   function choosePhotos(files) {
-    const selected = Array.from(files || []).filter((file) => file.type.startsWith('image/'))
+    const selected = Array.from(files || [])
+    const invalid = selected.find((file) => !file.type.startsWith('image/'))
+    const oversized = selected.find((file) => file.size > MAX_UPLOAD_BYTES)
+    if (invalid) return setMessage(`${invalid.name} is not a supported image file.`)
+    if (oversized) return setMessage(`${oversized.name} is larger than the ${siteConfig.uploadLimits.maxMegabytes} MB limit.`)
     if (!selected.length) return setMessage('Please choose an image file to continue.')
     setPhotos((current) => [...current, ...selected.map((file) => ({ file, url: URL.createObjectURL(file) }))])
     setMessage('')
@@ -192,22 +209,31 @@ function UploadPage() {
 
   async function upload() {
     if (!photos.length) return inputRef.current?.click()
+    const galleryWishText = galleryWish.trim() || window.prompt(`${siteConfig.weddingWish.label} ${siteConfig.weddingWish.optionalText}`, siteConfig.weddingWish.placeholder)?.trim().slice(0, siteConfig.weddingWish.maxLength) || ''
     setUploading(true)
     setUploadProgress(0)
     setMessage('Uploading your memories…')
     const failures = []
+    const uploaded = []
     for (const [index, photo] of photos.entries()) {
+      if (!photo.file.type.startsWith('image/') || photo.file.size > MAX_UPLOAD_BYTES) {
+        failures.push(`${photo.file.name}: unsupported type or larger than ${siteConfig.uploadLimits.maxMegabytes} MB`)
+        continue
+      }
       const safeName = photo.file.name.replace(/[^a-zA-Z0-9._-]/g, '-')
       const path = `${GUEST_UPLOAD_FOLDER}/${crypto.randomUUID()}-${safeName}`
-      const { error } = await supabase.storage.from(PHOTO_BUCKET).upload(path, photo.file, { contentType: photo.file.type, upsert: false })
-      if (error) failures.push(photo.file.name)
+      const { data, error } = await supabase.storage.from(PHOTO_BUCKET).upload(path, photo.file, { contentType: photo.file.type, upsert: false, metadata: galleryWishText ? { wedding_wish: galleryWishText } : undefined })
+      if (error) failures.push(formatSupabaseError(error, photo.file))
+      else if (data?.path) uploaded.push(photo)
+      else failures.push(`${photo.file.name}: Supabase did not confirm an uploaded path`)
       setUploadProgress(Math.round(((index + 1) / photos.length) * 100))
     }
-    photos.forEach((photo) => URL.revokeObjectURL(photo.url))
-    setPhotos([])
+    uploaded.forEach((photo) => URL.revokeObjectURL(photo.url))
+    setPhotos((current) => current.filter((photo) => !uploaded.includes(photo)))
     setUploading(false)
-    if (failures.length) setMessage(`Could not upload: ${failures.join(', ')}`)
+    if (failures.length) setMessage(failures.join(' | '))
     else {
+      setGalleryWish('')
       setMessage('')
       setSuccessOpen(true)
     }

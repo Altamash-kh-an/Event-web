@@ -1,5 +1,13 @@
 # How This Wedding Photo Album Was Built
 
+## Run and Supabase checks
+
+1. Copy `.env.example` to `.env.local` and fill in `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, and `VITE_ADMIN_EMAIL`. Never commit `.env.local`; it is ignored by `.gitignore`.
+2. Run `npm install`, then `npm run dev`. For production verification, run `npm run build` and optionally `npm run preview`.
+3. Guests upload as the Supabase `anon` role through the publishable key. Uploads use `upsert: false` and the configured `Habibpur-shadi` folder inside the private `wedding-photos` bucket.
+4. The repository contains the bucket MIME/25 MB settings and the admin-delete policy, but it does not contain the existing guest insert/select policies. In the Supabase Dashboard, verify that guest `INSERT` is granted only for bucket `wedding-photos` and the configured folder path, while public `SELECT` and guest `DELETE` remain disabled. Do not add a service-role key to this app.
+5. If the live bucket does not match the app, set its size limit to 25 MB and allow `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif`, `video/webm`, `video/mp4`, and `video/ogg`. Apply any policy change manually after reviewing existing policy names to avoid duplicates.
+
 This project is a React + Vite wedding photo album built with a premium dark Muslim wedding design and Supabase Storage. The implementation was completed as follows:
 
 1. The existing React + Vite application was inspected first so the original upload behavior and Supabase connection could remain working.
