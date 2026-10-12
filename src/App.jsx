@@ -5,15 +5,20 @@ import { siteConfig } from './siteConfig'
 import './App.css'
 import './admin.css'
 import GuestMediaActions from './GuestMediaActionsFixed'
+import { showGuestConfirm, showGuestWishDialog } from './guestDialogs'
+import './GuestDialogs.css'
 
 const GUEST_UPLOAD_FOLDER = siteConfig.uploadFolder
 const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL
 const MAX_UPLOAD_BYTES = siteConfig.uploadLimits.maxBytes
 
 function formatSupabaseError(error, file) {
-  const detail = [error?.message, error?.details, error?.hint, error?.statusCode ? `status ${error.statusCode}` : ''].filter(Boolean).join(' — ')
-  console.error('Supabase wedding photo upload failed', { error, fileName: file?.name, fileType: file?.type, fileSize: file?.size, bucket: PHOTO_BUCKET, folder: GUEST_UPLOAD_FOLDER })
-  return `Upload failed for ${file?.name || 'this photo'}: ${detail || 'Supabase returned an unknown error.'}`
+  const rawMessage = error?.message || ''
+  const isNetworkError = error?.name === 'TypeError' && /fetch|network|failed/i.test(rawMessage)
+  const category = isNetworkError ? 'Network error while contacting Supabase. Check HTTPS, internet access, and the configured Supabase URL.' : 'Supabase Storage rejected the upload.'
+  const detail = [rawMessage, error?.details, error?.hint, error?.status || error?.statusCode ? `status ${error.status || error.statusCode}` : ''].filter(Boolean).join(' — ')
+  console.error('Supabase wedding photo upload failed', { category, name: error?.name, message: rawMessage, details: error?.details, hint: error?.hint, status: error?.status || error?.statusCode, fileName: file?.name, fileType: file?.type, fileSize: file?.size, bucket: PHOTO_BUCKET, folder: GUEST_UPLOAD_FOLDER })
+  return `Upload failed for ${file?.name || 'this photo'}: ${category} ${detail || 'Supabase returned an unknown error.'}`
 }
 
 function isImageFile(item) {
@@ -80,6 +85,19 @@ function UploadPage() {
     if (session) loadAdminPhotos()
     else setAdminPhotos([])
   }, [session])
+
+  useEffect(() => {
+    const modal = document.querySelector('.success-modal')
+    if (!modal) return undefined
+    const closeButton = document.createElement('button')
+    closeButton.className = 'success-dismiss'
+    closeButton.type = 'button'
+    closeButton.setAttribute('aria-label', 'Close upload confirmation')
+    closeButton.textContent = '×'
+    closeButton.addEventListener('click', () => setSuccessOpen(false))
+    modal.appendChild(closeButton)
+    return () => closeButton.remove()
+  }, [successOpen])
 
   useEffect(() => {
     const note = document.querySelector('.upload-box .file-note')
@@ -209,7 +227,8 @@ function UploadPage() {
 
   async function upload() {
     if (!photos.length) return inputRef.current?.click()
-    const galleryWishText = galleryWish.trim() || window.prompt(`${siteConfig.weddingWish.label} ${siteConfig.weddingWish.optionalText}`, siteConfig.weddingWish.placeholder)?.trim().slice(0, siteConfig.weddingWish.maxLength) || ''
+    const promptedWish = galleryWish.trim() || await showGuestWishDialog({ label: siteConfig.weddingWish.label, placeholder: siteConfig.weddingWish.placeholder, maxLength: siteConfig.weddingWish.maxLength })
+    const galleryWishText = (promptedWish || '').slice(0, siteConfig.weddingWish.maxLength)
     setUploading(true)
     setUploadProgress(0)
     setMessage('Uploading your memories…')
@@ -222,10 +241,14 @@ function UploadPage() {
       }
       const safeName = photo.file.name.replace(/[^a-zA-Z0-9._-]/g, '-')
       const path = `${GUEST_UPLOAD_FOLDER}/${crypto.randomUUID()}-${safeName}`
-      const { data, error } = await supabase.storage.from(PHOTO_BUCKET).upload(path, photo.file, { contentType: photo.file.type, upsert: false, metadata: galleryWishText ? { wedding_wish: galleryWishText } : undefined })
-      if (error) failures.push(formatSupabaseError(error, photo.file))
-      else if (data?.path) uploaded.push(photo)
-      else failures.push(`${photo.file.name}: Supabase did not confirm an uploaded path`)
+      try {
+        const { data, error } = await supabase.storage.from(PHOTO_BUCKET).upload(path, photo.file, { contentType: photo.file.type, upsert: false, metadata: galleryWishText ? { wedding_wish: galleryWishText } : undefined })
+        if (error) failures.push(formatSupabaseError(error, photo.file))
+        else if (data?.path) uploaded.push(photo)
+        else failures.push(`${photo.file.name}: Supabase did not confirm an uploaded path`)
+      } catch (error) {
+        failures.push(formatSupabaseError(error, photo.file))
+      }
       setUploadProgress(Math.round(((index + 1) / photos.length) * 100))
     }
     uploaded.forEach((photo) => URL.revokeObjectURL(photo.url))
@@ -245,8 +268,10 @@ function UploadPage() {
     inputRef.current?.click()
   }
 
-  function removePhoto(index) {
-    URL.revokeObjectURL(photos[index].url)
+  async function removePhoto(index) {
+    const photo = photos[index]
+    if (!photo || !(await showGuestConfirm(`Remove ${photo.file.name} from the selected photos?`, 'REMOVE PHOTO'))) return
+    URL.revokeObjectURL(photo.url)
     setPhotos((current) => current.filter((_, photoIndex) => photoIndex !== index))
   }
 

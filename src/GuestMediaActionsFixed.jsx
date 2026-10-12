@@ -3,6 +3,8 @@ import { PHOTO_BUCKET, supabase } from './lib/supabase'
 import { siteConfig } from './siteConfig'
 import './GuestMediaActions.css'
 import './GuestMediaActionsFixed.css'
+import { showGuestConfirm } from './guestDialogs'
+import './GuestDialogs.css'
 
 const MAX_VIDEO_BYTES = siteConfig.uploadLimits.maxBytes
 const VIDEO_MIME_TYPES = ['video/webm', 'video/mp4', 'video/ogg']
@@ -51,12 +53,15 @@ export default function GuestMediaActionsFixed() {
     video.srcObject = stream
     video.muted = true
     video.playsInline = true
+    video.style.objectFit = 'contain'
+    const facingMode = stream.getVideoTracks?.()[0]?.getSettings?.().facingMode
+    video.style.transform = selectedCamera === 'user' || facingMode === 'user' ? 'scaleX(-1)' : 'none'
     const playPreview = async () => {
       try { await video.play() } catch (playError) { setError(`Camera preview could not start: ${playError.message || 'playback was blocked'}. Tap the camera button again.`) }
     }
     playPreview()
     return () => { if (video.srcObject === stream) video.srcObject = null }
-  }, [stream])
+  }, [stream, selectedCamera])
 
   useEffect(() => {
     const applyConfiguredCopy = () => {
@@ -76,6 +81,37 @@ export default function GuestMediaActionsFixed() {
     applyConfiguredCopy()
   }, [busy, open, media, success])
 
+  useEffect(() => {
+    const modal = document.querySelector('.camera-studio')
+    if (!modal) return undefined
+    let modalClose = modal.querySelector('.camera-dismiss')
+    if (!modalClose) {
+      modalClose = document.createElement('button')
+      modalClose.className = 'camera-dismiss'
+      modalClose.type = 'button'
+      modalClose.setAttribute('aria-label', 'Close camera')
+      modalClose.textContent = '×'
+      modal.appendChild(modalClose)
+    }
+    const closeHandler = () => { void resetModal() }
+    modalClose.addEventListener('click', closeHandler)
+    const preview = modal.querySelector('.captured-preview')
+    let mediaClose
+    if (preview && media) {
+      mediaClose = preview.querySelector('.media-dismiss') || document.createElement('button')
+      mediaClose.className = 'media-dismiss'
+      mediaClose.type = 'button'
+      mediaClose.setAttribute('aria-label', 'Remove captured memory')
+      mediaClose.textContent = '×'
+      if (!mediaClose.parentElement) preview.appendChild(mediaClose)
+      mediaClose.addEventListener('click', dismissMedia)
+    }
+    return () => {
+      modalClose?.removeEventListener('click', closeHandler)
+      mediaClose?.removeEventListener('click', dismissMedia)
+    }
+  }, [open, media, recording])
+
   useEffect(() => () => {
     if (timerRef.current) clearInterval(timerRef.current)
     stopStream(streamRef.current)
@@ -88,12 +124,19 @@ export default function GuestMediaActionsFixed() {
   }
 
   function reportUploadError(uploadError, file) {
-    const detail = [uploadError.message, uploadError.details, uploadError.hint, uploadError.statusCode ? `status ${uploadError.statusCode}` : ''].filter(Boolean).join(' — ')
-    console.error('Supabase wedding media upload failed', { error: uploadError, fileName: file?.name, fileType: file?.type, fileSize: file?.size, bucket: PHOTO_BUCKET, folder: siteConfig.uploadFolder })
-    return `Upload failed for ${file?.name || 'this memory'}: ${detail || 'Supabase returned an unknown error.'}`
+    const rawMessage = uploadError?.message || ''
+    const isNetworkError = uploadError?.name === 'TypeError' && /fetch|network|failed/i.test(rawMessage)
+    const category = isNetworkError ? 'Network error while contacting Supabase. Check HTTPS, internet access, and the configured Supabase URL.' : 'Supabase Storage rejected the upload.'
+    const detail = [rawMessage, uploadError?.details, uploadError?.hint, uploadError?.status || uploadError?.statusCode ? `status ${uploadError.status || uploadError.statusCode}` : ''].filter(Boolean).join(' — ')
+    console.error('Supabase wedding media upload failed', { category, name: uploadError?.name, message: rawMessage, details: uploadError?.details, hint: uploadError?.hint, status: uploadError?.status || uploadError?.statusCode, fileName: file?.name, fileType: file?.type, fileSize: file?.size, bucket: PHOTO_BUCKET, folder: siteConfig.uploadFolder })
+    return `Upload failed for ${file?.name || 'this memory'}: ${category} ${detail || 'Supabase returned an unknown error.'}`
   }
 
-  function closeModal() {
+  async function closeModal({ confirmDiscard = true } = {}) {
+    if (confirmDiscard && (recording || media)) {
+      const confirmed = await showGuestConfirm(recording ? 'Stop and discard this recording?' : 'Discard this captured memory?', 'DISCARD')
+      if (!confirmed) return false
+    }
     closingRef.current = true
     if (timerRef.current) clearInterval(timerRef.current)
     timerRef.current = null
@@ -106,12 +149,22 @@ export default function GuestMediaActionsFixed() {
     setMode(null)
     setVideoDevices([])
     setSelectedDeviceId('')
+    return true
   }
 
-  function resetModal() {
-    closeModal()
+  async function dismissMedia() {
+    if (!media || !(await showGuestConfirm('Remove this captured memory?', 'REMOVE MEMORY'))) return
+    URL.revokeObjectURL(media.url)
+    setMedia(null)
+    setWish('')
+    setError('')
+  }
+
+  async function resetModal({ confirmDiscard = true } = {}) {
+    if (!(await closeModal({ confirmDiscard }))) return false
     clearMediaPreview()
     setError('')
+    return true
   }
 
   async function listVideoDevices() {
@@ -130,7 +183,7 @@ export default function GuestMediaActionsFixed() {
   }
 
   async function requestCamera(nextMode, cameraSelection = nextMode === 'photo' ? 'environment' : 'user', deviceId = '') {
-    resetModal()
+    if (!(await resetModal())) return
     closingRef.current = false
     setOpen(true)
     setMode(nextMode)
@@ -224,7 +277,7 @@ export default function GuestMediaActionsFixed() {
       const actualMimeType = (recorder.mimeType || requestedMimeType).split(';')[0].toLowerCase()
       if (!VIDEO_MIME_TYPES.includes(actualMimeType) || !videoExtensionForMimeType(actualMimeType)) { setError(`This browser produced an unsupported video format (${actualMimeType || 'unknown'}). Please choose a video from your gallery.`); stopStream(streamRef.current); streamRef.current = null; setStream(null); return }
       const blob = new Blob(chunksRef.current, { type: actualMimeType })
-      if (!blob.size) { setError('Recording cancelled. No video was captured.'); return closeModal() }
+      if (!blob.size) { setError('Recording cancelled. No video was captured.'); void closeModal(); return }
       if (blob.size > MAX_VIDEO_BYTES) { setError(`The recording exceeded the ${siteConfig.uploadLimits.maxMegabytes} MB limit. Please record a shorter video.`); stopStream(streamRef.current); streamRef.current = null; setStream(null); return }
       const extension = videoExtensionForMimeType(actualMimeType)
       const file = new File([blob], `camera-${Date.now()}.${extension}`, { type: actualMimeType })
@@ -244,11 +297,16 @@ export default function GuestMediaActionsFixed() {
     setBusy(true); setError('')
     const safeName = media.file.name.replace(/[^a-zA-Z0-9._-]/g, '-')
     const path = `${siteConfig.uploadFolder}/${crypto.randomUUID()}-${safeName}`
-    const { data: uploadData, error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(path, media.file, { contentType: media.file.type, upsert: false, metadata: wish.trim() ? { wedding_wish: wish.trim().slice(0, siteConfig.weddingWish.maxLength) } : undefined })
-    setBusy(false)
-    if (uploadError) return setError(reportUploadError(uploadError, media.file))
-    if (!uploadData?.path) return setError('Supabase did not confirm the uploaded file path. The memory was not marked as uploaded.')
-    resetModal(); setSuccess(true)
+    try {
+      const { data: uploadData, error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(path, media.file, { contentType: media.file.type, upsert: false, metadata: wish.trim() ? { wedding_wish: wish.trim().slice(0, siteConfig.weddingWish.maxLength) } : undefined })
+      setBusy(false)
+      if (uploadError) return setError(reportUploadError(uploadError, media.file))
+      if (!uploadData?.path) return setError('Supabase did not confirm the uploaded file path. The memory was not marked as uploaded.')
+    } catch (uploadError) {
+      setBusy(false)
+      return setError(reportUploadError(uploadError, media.file))
+    }
+    await resetModal({ confirmDiscard: false }); setSuccess(true)
   }
 
   return <>
