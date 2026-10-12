@@ -45,8 +45,12 @@ This project is a React + Vite wedding photo album built with a premium dark Mus
    - Welcome line
    - Upload description
    - Guest upload folder
+   - Wedding-wish label, optional text, placeholder, and max length (`weddingWish`)
+   - Upload progress and success copy (`uploadMessages`)
 
    For another wedding, update only `src/siteConfig.js`. Existing uploaded photos are not moved when the folder name changes; the new folder is used for future uploads.
+
+   Example: edit `siteConfig.weddingWish.label`, `siteConfig.weddingWish.placeholder`, or `siteConfig.uploadMessages.successMessage` for the next event. The camera/photo/video flow reads these values directly.
 
 8. A separate `/admin` page was added without removing the admin access available from the guest page. Supabase email-password authentication is used for admin login and logout.
 

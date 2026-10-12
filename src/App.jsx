@@ -4,7 +4,7 @@ import { PHOTO_BUCKET, supabase } from './lib/supabase'
 import { siteConfig } from './siteConfig'
 import './App.css'
 import './admin.css'
-import GuestMediaActions from './GuestMediaActions'
+import GuestMediaActions from './GuestMediaActionsMimeSafe'
 
 const GUEST_UPLOAD_FOLDER = siteConfig.uploadFolder
 const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL
